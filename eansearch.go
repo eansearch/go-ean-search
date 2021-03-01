@@ -1,3 +1,4 @@
+// Package eansearch is a Go module for EAN, GTIN and ISBN name lookup and validation
 package eansearch
 
 import (
@@ -10,7 +11,6 @@ import (
 	"strconv"
 )
 
-// preferred language
 const English uint = 1
 const Danish uint = 2
 const German uint = 3
