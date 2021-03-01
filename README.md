@@ -19,7 +19,7 @@ func printProduct(p eansearch.Product) {
 }
 
 func main() {
-	var products []eansearch.Product
+    var products []eansearch.Product
     var more bool
     var err error
 
