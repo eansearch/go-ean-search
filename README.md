@@ -23,7 +23,7 @@ func main() {
     var more bool
     var err error
 
-	// get an API token at https://www.ean-search.org/ean-database-api.html
+    // get an API token at https://www.ean-search.org/ean-database-api.html
     token := "abcdef"
     eansearch.SetToken(token)
 
