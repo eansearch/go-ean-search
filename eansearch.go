@@ -52,8 +52,12 @@ var token string
 const baseURL string = "https://api.ean-search.org/api?format=json&token="
 
 // SetToken initialises the API with the token, you can apply for at https://www.ean-search.org/ean-database-api.html
-func SetToken(t string) {
+func SetToken(t string) error {
+	if t == "" {
+		return errors.New("empty token")
+	}
 	token = t
+	return nil
 }
 
 // BarcodeLookup searches for a single EAN code
@@ -110,4 +114,3 @@ func BarcodePrefixSearch(prefix string, page uint, lang uint) ([]Product, bool, 
 func ProductSearch(name string, page uint, lang uint) ([]Product, bool, error) {
 	return callAPIList("&op=product-search&name="+url.QueryEscape(name), page, lang)
 }
-
