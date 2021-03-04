@@ -114,3 +114,8 @@ func BarcodePrefixSearch(prefix string, page uint, lang uint) ([]Product, bool, 
 func ProductSearch(name string, page uint, lang uint) ([]Product, bool, error) {
 	return callAPIList("&op=product-search&name="+url.QueryEscape(name), page, lang)
 }
+// CategorySearch searches for products by category and name
+func ProductSearch(category uint, name string, page uint, lang uint) ([]Product, bool, error) {
+	return callAPIList("&op=category-search&category="+fmt.Sprint(category)+"&name="+url.QueryEscape(name), page, lang)
+}
+

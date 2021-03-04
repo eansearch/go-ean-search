@@ -67,5 +67,21 @@ func main() {
             fmt.Println("More results available")
         }
     }
+
+    products, more, err = eansearch.CategorySearch(45, "thriller", 0, eansearch.AnyLanguage)
+
+    if err != nil {
+        fmt.Println(err)
+    } else if len(products) == 0 {
+        fmt.Println("No results found")
+    } else {
+        for _, p := range products {
+            printProduct(p)
+        }
+        if more {
+            fmt.Println("More results available")
+        }
+    }
+
 }
 
