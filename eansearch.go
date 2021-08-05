@@ -85,7 +85,8 @@ func BarcodeLookup(ean string, lang uint) ([]Product, error) {
 
 func callAPIList(op string, page uint, lang uint) ([]Product, bool, error) {
 	var url string = baseURL + token + op + "&page=" + fmt.Sprint(page) + "&lang=" + fmt.Sprint(lang)
-	res, httperror := http.Get(url)
+	client := http.Client { Timeout: 180 * time.Second }
+	res, httperror := client.Get(url)
 	if httperror != nil || res.StatusCode != http.StatusOK {
 		return nil, false, errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
 	}
