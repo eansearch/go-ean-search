@@ -2,6 +2,7 @@
 package eansearch
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 const English uint = 1
@@ -34,8 +36,28 @@ type Product struct {
 	IssuingCountry string
 }
 
-type productOrError struct {
+type ProductOrError struct {
 	Product
+	Error string
+}
+
+type Checksum struct {
+	Ean            string
+	Valid          string
+}
+
+type ChecksumOrError struct {
+	Checksum
+	Error string
+}
+
+type Image struct {
+	Ean            string
+	Barcode        string
+}
+
+type ImageOrError struct {
+	Image
 	Error string
 }
 
@@ -70,7 +92,7 @@ func BarcodeLookup(ean string, lang uint) ([]Product, error) {
 	defer res.Body.Close()
 	body, _ := ioutil.ReadAll(res.Body)
 
-	var products []productOrError
+	var products []ProductOrError
 	err := json.Unmarshal(body, &products)
 	if err != nil {
 		return nil, err
@@ -116,7 +138,74 @@ func ProductSearch(name string, page uint, lang uint) ([]Product, bool, error) {
 	return callAPIList("&op=product-search&name="+url.QueryEscape(name), page, lang)
 }
 // CategorySearch searches for products by category and name
-func ProductSearch(category uint, name string, page uint, lang uint) ([]Product, bool, error) {
+func CategorySearch(category uint, name string, page uint, lang uint) ([]Product, bool, error) {
 	return callAPIList("&op=category-search&category="+fmt.Sprint(category)+"&name="+url.QueryEscape(name), page, lang)
+}
+
+func IssuingCountryLookup(ean string) (string, error) {
+	var url string = baseURL + token + "&op=issuing-country&ean=" + ean
+	res, httperror := http.Get(url)
+	if httperror != nil || res.StatusCode != http.StatusOK {
+		return "", errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
+	}
+	defer res.Body.Close()
+	body, _ := ioutil.ReadAll(res.Body)
+
+	var products []ProductOrError
+	err := json.Unmarshal(body, &products)
+	if err != nil {
+		return "", err
+	}
+	if len(products) > 0 && products[0].Error == "" {
+		return products[0].IssuingCountry, nil
+	} else if len(products) > 0 {
+		return "", errors.New(products[0].Error)
+	}
+	return "", errors.New("API error")
+}
+
+func VerifyChecksum(ean string) (bool, error) {
+	var url string = baseURL + token + "&op=verify-checksum&ean=" + ean
+	res, httperror := http.Get(url)
+	if httperror != nil || res.StatusCode != http.StatusOK {
+		return false, errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
+	}
+	defer res.Body.Close()
+	body, _ := ioutil.ReadAll(res.Body)
+
+	var result []ChecksumOrError
+	err := json.Unmarshal(body, &result)
+	if err != nil {
+		return false, err
+	}
+	if len(result) > 0 && result[0].Error == "" {
+		return result[0].Valid == "1", nil
+	} else if len(result) > 0 {
+		return false, errors.New(result[0].Error)
+	}
+	return false, errors.New("API error")
+}
+
+func BarcodeImage(ean string) ([]byte, error) {
+	var url string = baseURL + token + "&op=barcode-image&ean=" + ean
+	res, httperror := http.Get(url)
+	if httperror != nil || res.StatusCode != http.StatusOK {
+		return []byte{}, errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
+	}
+	defer res.Body.Close()
+	body, _ := ioutil.ReadAll(res.Body)
+
+	var result []ImageOrError
+	err := json.Unmarshal(body, &result)
+	if err != nil {
+		return []byte{}, err
+	}
+	if len(result) > 0 && result[0].Error == "" {
+		image, imgerr := base64.StdEncoding.DecodeString(result[0].Barcode)
+		return image, imgerr
+	} else if len(result) > 0 {
+		return []byte{}, errors.New(result[0].Error)
+	}
+	return []byte{}, errors.New("API error")
 }
 
