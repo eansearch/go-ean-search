@@ -105,6 +105,29 @@ func BarcodeLookup(ean string, lang uint) ([]Product, error) {
 	return nil, errors.New("No response from API")
 }
 
+// ISBNLookup searches for a single ISBN-10 or ISBN-13 code
+func ISBNLookup(isbn string) ([]Product, error) {
+	var url string = baseURL + token + "&op=barcode-lookup&isbn=" + isbn
+	res, httperror := http.Get(url)
+	if httperror != nil || res.StatusCode != http.StatusOK {
+		return nil, errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
+	}
+	defer res.Body.Close()
+	body, _ := ioutil.ReadAll(res.Body)
+
+	var products []ProductOrError
+	err := json.Unmarshal(body, &products)
+	if err != nil {
+		return nil, err
+	}
+	if len(products) > 0 && products[0].Error == "" {
+		return []Product{products[0].Product}, nil
+	} else if len(products) > 0 {
+		return nil, errors.New(products[0].Error)
+	}
+	return nil, errors.New("No response from API")
+}
+
 func callAPIList(op string, page uint, lang uint) ([]Product, bool, error) {
 	var url string = baseURL + token + op + "&page=" + fmt.Sprint(page) + "&lang=" + fmt.Sprint(lang)
 	client := http.Client { Timeout: 180 * time.Second }

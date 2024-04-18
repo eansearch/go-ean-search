@@ -38,6 +38,16 @@ func main() {
 		printProduct(products[0])
 	}
 
+	products, err = eansearch.ISBNLookup("1119578884")
+
+	if err != nil {
+		fmt.Println(err)
+	} else if len(products) == 0 {
+		fmt.Println("No results found")
+	} else {
+		printProduct(products[0])
+	}
+
 	products, more, err = eansearch.ProductSearch("esprit pullover", 0, eansearch.English)
 
 	if err != nil {
