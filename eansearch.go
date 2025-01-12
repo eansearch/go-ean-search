@@ -84,7 +84,7 @@ func SetToken(t string) error {
 
 // BarcodeLookup searches for a single EAN code
 func BarcodeLookup(ean string, lang uint) ([]Product, error) {
-	var url string = baseURL + token + "&op=barcode-lookup&ean=" + ean + "&lang=" + fmt.Sprint(lang)
+	var url = baseURL + token + "&op=barcode-lookup&ean=" + ean + "&lang=" + fmt.Sprint(lang)
 	res, httperror := http.Get(url)
 	if httperror != nil || res.StatusCode != http.StatusOK {
 		return nil, errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
