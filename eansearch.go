@@ -27,6 +27,8 @@ const Portuguese uint = 13
 const Swedish uint = 15
 const AnyLanguage uint = 99
 
+const MaxApiTries uint = 3
+
 // Product holds datasets returned by the API
 type Product struct {
 	Ean            string
@@ -128,10 +130,14 @@ func ISBNLookup(isbn string) ([]Product, error) {
 	return nil, errors.New("No response from API")
 }
 
-func callAPIList(op string, page uint, lang uint) ([]Product, bool, error) {
+func callAPIList(op string, page uint, lang uint, tries uint) ([]Product, bool, error) {
 	var url string = baseURL + token + op + "&page=" + fmt.Sprint(page) + "&lang=" + fmt.Sprint(lang)
 	client := http.Client { Timeout: 180 * time.Second }
 	res, httperror := client.Get(url)
+	if res.StatusCode == http.StatusTooManyRequests && tries <= MaxApiTries {
+		time.Sleep(1 * time.Second)
+		return callAPIList(op, page, lang, tries + 1);
+	}
 	if httperror != nil || res.StatusCode != http.StatusOK {
 		return nil, false, errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
 	}
@@ -153,16 +159,22 @@ func callAPIList(op string, page uint, lang uint) ([]Product, bool, error) {
 
 // BarcodePrefixSearch find all EANs strating with a certain prefix
 func BarcodePrefixSearch(prefix string, page uint, lang uint) ([]Product, bool, error) {
-	return callAPIList("&op=barcode-prefix-search&prefix="+prefix, page, lang)
+	return callAPIList("&op=barcode-prefix-search&prefix="+prefix, page, lang, 1)
 }
 
-// ProductSearch searches for products by name
+// ProductSearch searches for products by name (exact)
 func ProductSearch(name string, page uint, lang uint) ([]Product, bool, error) {
-	return callAPIList("&op=product-search&name="+url.QueryEscape(name), page, lang)
+	return callAPIList("&op=product-search&name="+url.QueryEscape(name), page, lang, 1)
 }
+
+// SilimarProductSearch searches for products by name (similar name is also ok)
+func SimilarProductSearch(name string, page uint, lang uint) ([]Product, bool, error) {
+	return callAPIList("&op=similar-product-search&name="+url.QueryEscape(name), page, lang, 1)
+}
+
 // CategorySearch searches for products by category and name
 func CategorySearch(category uint, name string, page uint, lang uint) ([]Product, bool, error) {
-	return callAPIList("&op=category-search&category="+fmt.Sprint(category)+"&name="+url.QueryEscape(name), page, lang)
+	return callAPIList("&op=category-search&category="+fmt.Sprint(category)+"&name="+url.QueryEscape(name), page, lang, 1)
 }
 
 func IssuingCountryLookup(ean string) (string, error) {

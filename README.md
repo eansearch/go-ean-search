@@ -8,6 +8,7 @@ package main
 import (
 	eansearch "github.com/eansearch/go-ean-search"
 	"fmt"
+	"os"
 )
 
 func printProduct(p eansearch.Product) {
@@ -25,7 +26,7 @@ func main() {
 	var country string
 
 	// get an API token at https://www.ean-search.org/ean-database-api.html
-	token := "abcdefg"
+	token := os.Getenv("EAN_SEARCH_API_TOKEN");
 	eansearch.SetToken(token)
 
 	products, err = eansearch.BarcodeLookup("5099750442227", eansearch.English)
@@ -49,6 +50,7 @@ func main() {
 	}
 
 	products, more, err = eansearch.ProductSearch("esprit pullover", 0, eansearch.English)
+	// products, more, err = eansearch.SimilarProductSearch("esprit whateverelsenotfound pullover", 0, eansearch.English)
 
 	if err != nil {
 		fmt.Println(err)
@@ -89,7 +91,7 @@ func main() {
 
 
         ean = "5099750442228"
-        valid, err = eansearch.VerifyChecksum(ean)
+        valid, err := eansearch.VerifyChecksum(ean)
 
         if err != nil {
                 fmt.Println(err)
@@ -102,7 +104,7 @@ func main() {
         }
 
         ean = "5099750442227"
-        image, err = eansearch.BarcodeImage(ean)
+        image, err := eansearch.BarcodeImage(ean)
 
         if err != nil {
                 fmt.Println(err)
