@@ -19,7 +19,17 @@ func printProduct(p eansearch.Product) {
 	fmt.Println("\t IssuingCountry:", p.IssuingCountry)
 }
 
+func printExtProduct(p eansearch.ExtProduct) {
+	fmt.Println("EAN:\t", p.Ean)
+	fmt.Println("\t Name:", p.Name)
+	fmt.Println("\t CategoryID:", p.CategoryID)
+	fmt.Println("\t CategoryName:", p.CategoryName)
+	fmt.Println("\t GoogleCategoryID:", p.GoogleCategoryID)
+	fmt.Println("\t IssuingCountry:", p.IssuingCountry)
+}
+
 func main() {
+	var extproducts []eansearch.ExtProduct
 	var products []eansearch.Product
 	var more bool
 	var err error
@@ -29,14 +39,14 @@ func main() {
 	token := os.Getenv("EAN_SEARCH_API_TOKEN");
 	eansearch.SetToken(token)
 
-	products, err = eansearch.BarcodeLookup("5099750442227", eansearch.English)
+	extproducts, err = eansearch.BarcodeLookup("5099750442227", eansearch.English)
 
 	if err != nil {
 		fmt.Println(err)
 	} else if len(products) == 0 {
 		fmt.Println("No results found")
 	} else {
-		printProduct(products[0])
+		printExtProduct(products[0])
 	}
 
 	products, err = eansearch.ISBNLookup("1119578884")

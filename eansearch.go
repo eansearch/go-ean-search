@@ -38,8 +38,22 @@ type Product struct {
 	IssuingCountry string
 }
 
+type ExtProduct struct {
+	Ean            string
+	Name           string
+	CategoryID     uint `json:",string"`
+	CategoryName   string
+	GoogleCategoryID     uint `json:",string"`
+	IssuingCountry string
+}
+
 type ProductOrError struct {
 	Product
+	Error string
+}
+
+type ExtProductOrError struct {
+	ExtProduct
 	Error string
 }
 
@@ -85,7 +99,7 @@ func SetToken(t string) error {
 }
 
 // BarcodeLookup searches for a single EAN code
-func BarcodeLookup(ean string, lang uint) ([]Product, error) {
+func BarcodeLookup(ean string, lang uint) ([]ExtProduct, error) {
 	var url = baseURL + token + "&op=barcode-lookup&ean=" + ean + "&lang=" + fmt.Sprint(lang)
 	res, httperror := http.Get(url)
 	if httperror != nil || res.StatusCode != http.StatusOK {
@@ -94,13 +108,13 @@ func BarcodeLookup(ean string, lang uint) ([]Product, error) {
 	defer res.Body.Close()
 	body, _ := ioutil.ReadAll(res.Body)
 
-	var products []ProductOrError
+	var products []ExtProductOrError
 	err := json.Unmarshal(body, &products)
 	if err != nil {
 		return nil, err
 	}
 	if len(products) > 0 && products[0].Error == "" {
-		return []Product{products[0].Product}, nil
+		return []ExtProduct{products[0].ExtProduct}, nil
 	} else if len(products) > 0 {
 		return nil, errors.New(products[0].Error)
 	}
