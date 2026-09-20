@@ -113,6 +113,30 @@ func main() {
                 }
         }
 
+        // find the Amazon ASIN for a barcode, and the barcode for an ASIN
+        asin, err := eansearch.FindAsinForEan("9781119578888")
+        if err != nil {
+                fmt.Println(err)
+        } else {
+                fmt.Println("ASIN:", asin)
+                ean, err = eansearch.FindEanForAsin(asin)
+                if err == nil {
+                        fmt.Println("EAN for ASIN", asin, "is", ean)
+                }
+        }
+
+        // find the Library of Congress control number (LCCN) for a barcode, and the barcode for an LCCN
+        lccn, err := eansearch.FindLccnForEan("9781119578888")
+        if err != nil {
+                fmt.Println(err)
+        } else {
+                fmt.Println("LCCN:", lccn)
+                ean, err = eansearch.FindEanForLccn(lccn)
+                if err == nil {
+                        fmt.Println("EAN for LCCN", lccn, "is", ean)
+                }
+        }
+
         ean = "5099750442227"
         image, err := eansearch.BarcodeImage(ean)
 
@@ -123,6 +147,11 @@ func main() {
                 //fmt.Printf("%s", image)
                 _ = image
                 fmt.Println("Barcode image received")
+        }
+
+        credits, err := eansearch.CreditsRemaining()
+        if err == nil {
+                fmt.Println("API credits remaining:", credits)
         }
 
 }
