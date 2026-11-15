@@ -43,10 +43,10 @@ func main() {
 
 	if err != nil {
 		fmt.Println(err)
-	} else if len(products) == 0 {
+	} else if len(extproducts) == 0 {
 		fmt.Println("No results found")
 	} else {
-		printExtProduct(products[0])
+		printExtProduct(extproducts[0])
 	}
 
 	products, err = eansearch.ISBNLookup("1119578884")

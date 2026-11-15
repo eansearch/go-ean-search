@@ -10,24 +10,37 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 )
 
+// Language codes for the preferred language of product names
 const English uint = 1
 const Danish uint = 2
 const German uint = 3
 const Spanish uint = 4
-const Finish uint = 5
+const Finnish uint = 5
 const French uint = 6
+const Hungarian uint = 7
 const Italian uint = 8
+const Japanese uint = 9
 const Dutch uint = 10
 const Norwegian uint = 11
 const Polish uint = 12
 const Portuguese uint = 13
 const Swedish uint = 15
+const Czech uint = 16
+const Croatian uint = 18
+const Romanian uint = 19
+const Bulgarian uint = 20
+const Greek uint = 21
 const AnyLanguage uint = 99
 
+// Finish is the old, misspelled name of Finnish, kept for compatibility
+const Finish uint = Finnish
+
+// MaxApiTries is the maximum number of requests per API call (retries on 429 responses)
 const MaxApiTries uint = 3
 
 // Product holds datasets returned by the API
@@ -39,13 +52,14 @@ type Product struct {
 	IssuingCountry string
 }
 
+// ExtProduct holds datasets returned by BarcodeLookup(), including the Google category
 type ExtProduct struct {
-	Ean            string
-	Name           string
-	CategoryID     uint `json:",string"`
-	CategoryName   string
-	GoogleCategoryID     uint `json:",string"`
-	IssuingCountry string
+	Ean              string
+	Name             string
+	CategoryID       uint `json:",string"`
+	CategoryName     string
+	GoogleCategoryID uint `json:",string"`
+	IssuingCountry   string
 }
 
 type ProductOrError struct {
@@ -59,8 +73,8 @@ type ExtProductOrError struct {
 }
 
 type Checksum struct {
-	Ean            string
-	Valid          string
+	Ean   string
+	Valid string
 }
 
 type ChecksumOrError struct {
@@ -69,8 +83,8 @@ type ChecksumOrError struct {
 }
 
 type Image struct {
-	Ean            string
-	Barcode        string
+	Ean     string
+	Barcode string
 }
 
 type ImageOrError struct {
@@ -79,8 +93,8 @@ type ImageOrError struct {
 }
 
 type AsinLookup struct {
-	Ean            string
-	Asin           string
+	Ean  string
+	Asin string
 }
 
 type AsinOrError struct {
@@ -89,8 +103,8 @@ type AsinOrError struct {
 }
 
 type LccnLookup struct {
-	Ean            string
-	Lccn           string
+	Ean  string
+	Lccn string
 }
 
 type LccnOrError struct {
@@ -98,12 +112,60 @@ type LccnOrError struct {
 	Error string
 }
 
+// flexUint decodes a number the API may send as "15", 15, "" or null
+type flexUint uint
+
+func (f *flexUint) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), `"`)
+	if s == "" || s == "null" {
+		*f = 0
+		return nil
+	}
+	n, err := strconv.ParseUint(s, 10, 0)
+	if err != nil {
+		return errors.New("invalid number in API response: " + string(b))
+	}
+	*f = flexUint(n)
+	return nil
+}
+
+// flexBool decodes a flag the API may send as true, 1, "1" or "true"
+type flexBool bool
+
+func (f *flexBool) UnmarshalJSON(b []byte) error {
+	s := strings.ToLower(strings.Trim(string(b), `"`))
+	*f = s == "1" || s == "true"
+	return nil
+}
+
+// apiProduct is the wire format of a product, tolerant about how numbers are encoded
+type apiProduct struct {
+	Ean              string
+	Name             string
+	CategoryID       flexUint
+	CategoryName     string
+	GoogleCategoryID flexUint
+	IssuingCountry   string
+}
+
+func (p apiProduct) product() Product {
+	return Product{p.Ean, p.Name, uint(p.CategoryID), p.CategoryName, p.IssuingCountry}
+}
+
+func (p apiProduct) extProduct() ExtProduct {
+	return ExtProduct{p.Ean, p.Name, uint(p.CategoryID), p.CategoryName, uint(p.GoogleCategoryID), p.IssuingCountry}
+}
+
 type searchList struct {
-	Page          uint
-	MoreProducts  bool
-	TotalProducts uint
-	ProductList   []Product
+	Page          flexUint
+	MoreProducts  flexBool
+	TotalProducts flexUint
+	ProductList   []apiProduct
 	Error         string
+}
+
+type apiError struct {
+	Error string
 }
 
 var token string
@@ -113,6 +175,9 @@ const baseURL string = "https://api.ean-search.org/api?format=json&token="
 const userAgent string = "go-eansearch/1.0"
 
 var client = http.Client{Timeout: 180 * time.Second}
+
+// pause before retrying after a 429 response
+var retryDelay = 1 * time.Second
 
 // API credits remaining, updated with every API response (-1 = unknown)
 var remaining int64 = -1
@@ -135,20 +200,51 @@ func httpGet(url string) (*http.Response, error) {
 
 // callAPI calls an API operation and returns the raw response body, retrying on 429 responses
 func callAPI(op string, tries uint) ([]byte, error) {
-	res, err := httpGet(baseURL + token + op)
+	for {
+		res, err := httpGet(baseURL + url.QueryEscape(token) + op)
+		if err != nil {
+			return nil, err
+		}
+		body, err := ioutil.ReadAll(res.Body)
+		res.Body.Close()
+		if res.StatusCode == http.StatusTooManyRequests && tries < MaxApiTries {
+			time.Sleep(retryDelay)
+			tries++
+			continue
+		}
+		if res.StatusCode != http.StatusOK {
+			return nil, errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
+		}
+		if err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
+// callAPIFirst calls an API operation that returns a list with a single result and decodes
+// that result into v. An error reported by the API is returned as error.
+func callAPIFirst(op string, v interface{}) error {
+	body, err := callAPI(op, 1)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
-	if res.StatusCode == http.StatusTooManyRequests && tries < MaxApiTries {
-		time.Sleep(1 * time.Second)
-		return callAPI(op, tries+1)
+	var results []json.RawMessage
+	if err = json.Unmarshal(body, &results); err != nil {
+		var e apiError
+		if json.Unmarshal(body, &e) == nil && e.Error != "" {
+			return errors.New(e.Error)
+		}
+		return err
 	}
-	if res.StatusCode != http.StatusOK {
-		return nil, errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
+	if len(results) == 0 {
+		return errors.New("No response from API")
 	}
-	return body, nil
+	var e apiError
+	if json.Unmarshal(results[0], &e) == nil && e.Error != "" {
+		return errors.New(e.Error)
+	}
+	return json.Unmarshal(results[0], v)
 }
 
 // SetToken initialises the API with the token, you can apply for at https://www.ean-search.org/ean-database-api.html
@@ -162,79 +258,63 @@ func SetToken(t string) error {
 
 // BarcodeLookup searches for a single EAN code
 func BarcodeLookup(ean string, lang uint) ([]ExtProduct, error) {
-	var url = baseURL + token + "&op=barcode-lookup&ean=" + ean + "&lang=" + fmt.Sprint(lang)
-	res, httperror := httpGet(url)
-	if httperror != nil || res.StatusCode != http.StatusOK {
-		return nil, errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
-	}
-	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
-
-	var products []ExtProductOrError
-	err := json.Unmarshal(body, &products)
+	var p apiProduct
+	err := callAPIFirst("&op=barcode-lookup&ean="+url.QueryEscape(ean)+"&language="+fmt.Sprint(lang), &p)
 	if err != nil {
 		return nil, err
 	}
-	if len(products) > 0 && products[0].Error == "" {
-		return []ExtProduct{products[0].ExtProduct}, nil
-	} else if len(products) > 0 {
-		return nil, errors.New(products[0].Error)
-	}
-	return nil, errors.New("No response from API")
+	return []ExtProduct{p.extProduct()}, nil
 }
 
 // ISBNLookup searches for a single ISBN-10 or ISBN-13 code
 func ISBNLookup(isbn string) ([]Product, error) {
-	var url string = baseURL + token + "&op=barcode-lookup&isbn=" + isbn
-	res, httperror := httpGet(url)
-	if httperror != nil || res.StatusCode != http.StatusOK {
-		return nil, errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
+	// remove hyphens, spaces etc., keep the digits (and X as ISBN-10 check digit)
+	isbn = strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' || r == 'X' {
+			return r
+		}
+		return -1
+	}, strings.ToUpper(isbn))
+	op := "&op=barcode-lookup&isbn=" + isbn
+	if len(isbn) == 13 {
+		op = "&op=barcode-lookup&ean=" + isbn // an ISBN-13 is looked up as EAN
 	}
-	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
-
-	var products []ProductOrError
-	err := json.Unmarshal(body, &products)
-	if err != nil {
+	var p apiProduct
+	if err := callAPIFirst(op, &p); err != nil {
 		return nil, err
 	}
-	if len(products) > 0 && products[0].Error == "" {
-		return []Product{products[0].Product}, nil
-	} else if len(products) > 0 {
-		return nil, errors.New(products[0].Error)
-	}
-	return nil, errors.New("No response from API")
+	return []Product{p.product()}, nil
 }
 
+// callAPIList calls a search operation and returns one page of results and if there are more pages.
+// A search without results returns an empty list and no error.
 func callAPIList(op string, page uint, lang uint, tries uint) ([]Product, bool, error) {
-	var url string = baseURL + token + op + "&page=" + fmt.Sprint(page) + "&lang=" + fmt.Sprint(lang)
-	res, httperror := httpGet(url)
-	if res.StatusCode == http.StatusTooManyRequests && tries <= MaxApiTries {
-		time.Sleep(1 * time.Second)
-		return callAPIList(op, page, lang, tries + 1);
-	}
-	if httperror != nil || res.StatusCode != http.StatusOK {
-		return nil, false, errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
-	}
-	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
-
-	var list searchList
-	err := json.Unmarshal(body, &list)
+	body, err := callAPI(op+"&page="+fmt.Sprint(page)+"&language="+fmt.Sprint(lang), tries)
 	if err != nil {
 		return nil, false, err
 	}
-	if len(list.ProductList) > 0 && list.Error == "" {
-		return list.ProductList, list.MoreProducts, nil
-	} else if len(list.ProductList) > 0 {
+	var list searchList
+	if err = json.Unmarshal(body, &list); err != nil {
+		// errors are reported as a list with a single error object
+		var errs []apiError
+		if json.Unmarshal(body, &errs) == nil && len(errs) > 0 && errs[0].Error != "" {
+			return nil, false, errors.New(errs[0].Error)
+		}
+		return nil, false, err
+	}
+	if list.Error != "" {
 		return nil, false, errors.New(list.Error)
 	}
-	return nil, false, errors.New("No response from API")
+	products := make([]Product, 0, len(list.ProductList))
+	for _, p := range list.ProductList {
+		products = append(products, p.product())
+	}
+	return products, bool(list.MoreProducts), nil
 }
 
-// BarcodePrefixSearch find all EANs strating with a certain prefix
+// BarcodePrefixSearch finds all EANs starting with a certain prefix
 func BarcodePrefixSearch(prefix string, page uint, lang uint) ([]Product, bool, error) {
-	return callAPIList("&op=barcode-prefix-search&prefix="+prefix, page, lang, 1)
+	return callAPIList("&op=barcode-prefix-search&prefix="+url.QueryEscape(prefix), page, lang, 1)
 }
 
 // ProductSearch searches for products by name (exact)
@@ -242,7 +322,7 @@ func ProductSearch(name string, page uint, lang uint) ([]Product, bool, error) {
 	return callAPIList("&op=product-search&name="+url.QueryEscape(name), page, lang, 1)
 }
 
-// SilimarProductSearch searches for products by name (similar name is also ok)
+// SimilarProductSearch searches for products by name (similar name is also ok)
 func SimilarProductSearch(name string, page uint, lang uint) ([]Product, bool, error) {
 	return callAPIList("&op=similar-product-search&name="+url.QueryEscape(name), page, lang, 1)
 }
@@ -252,76 +332,38 @@ func CategorySearch(category uint, name string, page uint, lang uint) ([]Product
 	return callAPIList("&op=category-search&category="+fmt.Sprint(category)+"&name="+url.QueryEscape(name), page, lang, 1)
 }
 
+// IssuingCountryLookup returns the country where the EAN was issued
 func IssuingCountryLookup(ean string) (string, error) {
-	var url string = baseURL + token + "&op=issuing-country&ean=" + ean
-	res, httperror := httpGet(url)
-	if httperror != nil || res.StatusCode != http.StatusOK {
-		return "", errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
-	}
-	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
-
-	var products []ProductOrError
-	err := json.Unmarshal(body, &products)
-	if err != nil {
+	var p apiProduct
+	if err := callAPIFirst("&op=issuing-country&ean="+url.QueryEscape(ean), &p); err != nil {
 		return "", err
 	}
-	if len(products) > 0 && products[0].Error == "" {
-		return products[0].IssuingCountry, nil
-	} else if len(products) > 0 {
-		return "", errors.New(products[0].Error)
-	}
-	return "", errors.New("API error")
+	return p.IssuingCountry, nil
 }
 
+// VerifyChecksum checks if the checksum of the EAN is valid
 func VerifyChecksum(ean string) (bool, error) {
-	var url string = baseURL + token + "&op=verify-checksum&ean=" + ean
-	res, httperror := httpGet(url)
-	if httperror != nil || res.StatusCode != http.StatusOK {
-		return false, errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
+	var result struct {
+		Valid flexBool
 	}
-	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
-
-	var result []ChecksumOrError
-	err := json.Unmarshal(body, &result)
-	if err != nil {
+	if err := callAPIFirst("&op=verify-checksum&ean="+url.QueryEscape(ean), &result); err != nil {
 		return false, err
 	}
-	if len(result) > 0 && result[0].Error == "" {
-		return result[0].Valid == "1", nil
-	} else if len(result) > 0 {
-		return false, errors.New(result[0].Error)
-	}
-	return false, errors.New("API error")
+	return bool(result.Valid), nil
 }
 
+// BarcodeImage returns a PNG image of the EAN barcode
 func BarcodeImage(ean string) ([]byte, error) {
-	var url string = baseURL + token + "&op=barcode-image&ean=" + ean
-	res, httperror := httpGet(url)
-	if httperror != nil || res.StatusCode != http.StatusOK {
-		return []byte{}, errors.New("HTTP Error " + strconv.Itoa(res.StatusCode))
-	}
-	defer res.Body.Close()
-	body, _ := ioutil.ReadAll(res.Body)
-
-	var result []ImageOrError
-	err := json.Unmarshal(body, &result)
-	if err != nil {
+	var result Image
+	if err := callAPIFirst("&op=barcode-image&ean="+url.QueryEscape(ean), &result); err != nil {
 		return []byte{}, err
 	}
-	if len(result) > 0 && result[0].Error == "" {
-		image, imgerr := base64.StdEncoding.DecodeString(result[0].Barcode)
-		return image, imgerr
-	} else if len(result) > 0 {
-		return []byte{}, errors.New(result[0].Error)
-	}
-	return []byte{}, errors.New("API error")
+	return base64.StdEncoding.DecodeString(result.Barcode)
 }
 
 // FindAsinForEan finds the Amazon ASIN for an EAN or ISBN-13 barcode
 func FindAsinForEan(ean string) (string, error) {
-	body, err := callAPI("&op=asin-for-ean-lookup&ean="+ean, 1)
+	body, err := callAPI("&op=asin-for-ean-lookup&ean="+url.QueryEscape(ean), 1)
 	if err != nil {
 		return "", err
 	}
@@ -361,7 +403,7 @@ func FindEanForAsin(asin string) (string, error) {
 
 // FindLccnForEan finds the Library of Congress Control Number (LCCN) for an EAN or ISBN-13 barcode
 func FindLccnForEan(ean string) (string, error) {
-	body, err := callAPI("&op=lccn-for-ean-lookup&ean="+ean, 1)
+	body, err := callAPI("&op=lccn-for-ean-lookup&ean="+url.QueryEscape(ean), 1)
 	if err != nil {
 		return "", err
 	}

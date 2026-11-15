@@ -1,13 +1,14 @@
 package eansearch
 
 import (
-	"testing"
-	"os"
+	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+	"testing"
 )
 
 func TestSetToken(t *testing.T) {
@@ -25,30 +26,26 @@ func printProduct(p Product) {
 	fmt.Println("\t IssuingCountry:", p.IssuingCountry)
 }
 
-func TestBarcodeLookup(t *testing.T) {
+// TestLiveBarcodePrefixSearch queries the real API, it only runs if EAN_SEARCH_API_TOKEN is set
+func TestLiveBarcodePrefixSearch(t *testing.T) {
 	token := os.Getenv("EAN_SEARCH_API_TOKEN")
-	err := SetToken(token)
-	if err != nil {
-		t.Errorf("Error detected in SetToken()")
+	if token == "" {
+		t.Skip("EAN_SEARCH_API_TOKEN not set")
+	}
+	if err := SetToken(token); err != nil {
+		t.Fatalf("Error detected in SetToken()")
 	}
 
-	var products []Product
-	var more bool
-	products, more, err = BarcodePrefixSearch("40620999", 0, AnyLanguage)
-
+	products, more, err := BarcodePrefixSearch("40620999", 0, AnyLanguage)
 	if err != nil {
-		fmt.Println(err)
-	} else if len(products) == 0 {
-		fmt.Println("No results found")
-	} else {
-		for _, p := range products {
-			printProduct(p)
-		}
-		if more {
-			fmt.Println("More results available")
-		}
+		t.Fatalf("BarcodePrefixSearch() failed: %v", err)
 	}
-
+	for _, p := range products {
+		printProduct(p)
+	}
+	if more {
+		fmt.Println("More results available")
+	}
 }
 
 // fakeAPI replaces the HTTP transport, so the tests run offline
@@ -58,12 +55,27 @@ type fakeAPI struct {
 	userAgent string
 	lastURL   string
 	body      string
+	fail      bool // simulate a network error
+	closed    int  // number of response bodies closed
+}
+
+type fakeBody struct {
+	io.Reader
+	f *fakeAPI
+}
+
+func (b fakeBody) Close() error {
+	b.f.closed++
+	return nil
 }
 
 func (f *fakeAPI) RoundTrip(req *http.Request) (*http.Response, error) {
 	f.calls++
 	f.userAgent = req.Header.Get("User-Agent")
 	f.lastURL = req.URL.String()
+	if f.fail {
+		return nil, errors.New("network unreachable")
+	}
 	status := http.StatusOK
 	if len(f.statuses) > 0 {
 		status = f.statuses[0]
@@ -72,7 +84,7 @@ func (f *fakeAPI) RoundTrip(req *http.Request) (*http.Response, error) {
 	res := &http.Response{
 		StatusCode: status,
 		Header:     http.Header{"X-Credits-Remaining": []string{"42"}},
-		Body:       ioutil.NopCloser(strings.NewReader(f.body)),
+		Body:       fakeBody{strings.NewReader(f.body), f},
 	}
 	return res, nil
 }
@@ -81,6 +93,7 @@ func useFakeAPI(body string, statuses ...int) *fakeAPI {
 	f := &fakeAPI{body: body, statuses: statuses}
 	client.Transport = f
 	token = "test"
+	retryDelay = 0
 	atomic.StoreInt64(&remaining, -1)
 	return f
 }
@@ -154,5 +167,155 @@ func TestCreditsRemaining(t *testing.T) {
 	CreditsRemaining()
 	if f.calls != calls {
 		t.Errorf("cached value not used")
+	}
+}
+
+const productJSON = `{"ean":"5099750442227","name":"Thriller","categoryId":"45","categoryName":"Music","googleCategoryId":"855","issuingCountry":"UK"}`
+
+func TestLanguageParameter(t *testing.T) {
+	defer func() { client.Transport = nil }()
+
+	f := useFakeAPI(`[` + productJSON + `]`)
+	p, err := BarcodeLookup("5099750442227", German)
+	if err != nil || len(p) != 1 || p[0].Name != "Thriller" || p[0].CategoryID != 45 || p[0].GoogleCategoryID != 855 {
+		t.Errorf("BarcodeLookup() = %v, %v", p, err)
+	}
+	if !strings.HasSuffix(f.lastURL, "&op=barcode-lookup&ean=5099750442227&language=3") {
+		t.Errorf("unexpected URL %s", f.lastURL)
+	}
+
+	f = useFakeAPI(`{"page":0,"moreproducts":true,"totalproducts":12,"productlist":[` + productJSON + `]}`)
+	list, more, err := ProductSearch("michael jackson", 2, German)
+	if err != nil || len(list) != 1 || !more || list[0].Ean != "5099750442227" {
+		t.Errorf("ProductSearch() = %v, %v, %v", list, more, err)
+	}
+	if !strings.HasSuffix(f.lastURL, "&op=product-search&name=michael+jackson&page=2&language=3") {
+		t.Errorf("unexpected URL %s", f.lastURL)
+	}
+}
+
+func TestNetworkError(t *testing.T) {
+	defer func() { client.Transport = nil }()
+
+	useFakeAPI(``).fail = true
+	if _, err := BarcodeLookup("1", English); err == nil {
+		t.Errorf("BarcodeLookup(): network error not returned")
+	}
+	if _, err := ISBNLookup("1119578884"); err == nil {
+		t.Errorf("ISBNLookup(): network error not returned")
+	}
+	if _, _, err := ProductSearch("x", 0, English); err == nil {
+		t.Errorf("ProductSearch(): network error not returned")
+	}
+	if _, err := IssuingCountryLookup("1"); err == nil {
+		t.Errorf("IssuingCountryLookup(): network error not returned")
+	}
+	if _, err := VerifyChecksum("1"); err == nil {
+		t.Errorf("VerifyChecksum(): network error not returned")
+	}
+	if _, err := BarcodeImage("1"); err == nil {
+		t.Errorf("BarcodeImage(): network error not returned")
+	}
+}
+
+func TestSearchResults(t *testing.T) {
+	defer func() { client.Transport = nil }()
+
+	// no results is not an error
+	useFakeAPI(`{"page":0,"moreproducts":false,"totalproducts":0,"productlist":[]}`)
+	if list, more, err := ProductSearch("x", 0, English); err != nil || len(list) != 0 || more {
+		t.Errorf("empty search = %v, %v, %v", list, more, err)
+	}
+	// API errors, as list or as object
+	for _, body := range []string{`[{"error":"Invalid token"}]`, `{"error":"Invalid token"}`} {
+		useFakeAPI(body)
+		if _, _, err := BarcodePrefixSearch("4062", 0, English); err == nil || err.Error() != "Invalid token" {
+			t.Errorf("API error not returned for %s: %v", body, err)
+		}
+	}
+	useFakeAPI(`[{"error":"Invalid barcode"}]`)
+	if _, err := BarcodeLookup("1", English); err == nil || err.Error() != "Invalid barcode" {
+		t.Errorf("API error not returned: %v", err)
+	}
+	// numbers and flags may be sent as strings or left empty
+	useFakeAPI(`{"page":"0","moreproducts":"1","totalproducts":"12","productlist":[{"ean":"1","name":"n","categoryId":20,"categoryName":""}]}`)
+	if list, more, err := ProductSearch("x", 0, English); err != nil || len(list) != 1 || !more || list[0].CategoryID != 20 {
+		t.Errorf("search = %v, %v, %v", list, more, err)
+	}
+	useFakeAPI(`[{"ean":"1","name":"n","categoryId":"","categoryName":"","googleCategoryId":"","issuingCountry":"UK"}]`)
+	if p, err := BarcodeLookup("1", English); err != nil || len(p) != 1 || p[0].GoogleCategoryID != 0 {
+		t.Errorf("BarcodeLookup() = %v, %v", p, err)
+	}
+}
+
+func TestRetriesAndBodies(t *testing.T) {
+	defer func() { client.Transport = nil }()
+
+	f := useFakeAPI(``, 429, 429, 429, 429, 429)
+	if _, _, err := ProductSearch("x", 0, English); err == nil || f.calls != int(MaxApiTries) {
+		t.Errorf("expected failure after %d calls, got %d calls, err %v", MaxApiTries, f.calls, err)
+	}
+	if f.closed != f.calls {
+		t.Errorf("%d of %d response bodies closed", f.closed, f.calls)
+	}
+	f = useFakeAPI(`[`+productJSON+`]`, 429)
+	if _, err := BarcodeLookup("1", English); err != nil || f.calls != 2 || f.closed != 2 {
+		t.Errorf("expected success after 2 calls, got %d calls, %d closed, err %v", f.calls, f.closed, err)
+	}
+	f = useFakeAPI(``, 500)
+	if _, err := VerifyChecksum("1"); err == nil || err.Error() != "HTTP Error 500" || f.closed != 1 {
+		t.Errorf("HTTP error not returned: %v", err)
+	}
+}
+
+func TestParameterEscaping(t *testing.T) {
+	defer func() { client.Transport = nil }()
+
+	f := useFakeAPI(`{"productlist":[]}`)
+	BarcodePrefixSearch("4062&op=account-status", 0, English)
+	if !strings.Contains(f.lastURL, "&prefix=4062%26op%3Daccount-status&page=0") {
+		t.Errorf("prefix not URL encoded: %s", f.lastURL)
+	}
+}
+
+func TestISBNLookup(t *testing.T) {
+	defer func() { client.Transport = nil }()
+
+	f := useFakeAPI(`[{"ean":"9781119578888","name":"Go Programming","categoryId":"15","categoryName":"Books","issuingCountry":"US"}]`)
+	if p, err := ISBNLookup("1-119-57888-4"); err != nil || len(p) != 1 || p[0].CategoryID != 15 {
+		t.Errorf("ISBNLookup() = %v, %v", p, err)
+	}
+	if !strings.HasSuffix(f.lastURL, "&op=barcode-lookup&isbn=1119578884") {
+		t.Errorf("unexpected URL %s", f.lastURL)
+	}
+	ISBNLookup("978-1-119-57888-8")
+	if !strings.HasSuffix(f.lastURL, "&op=barcode-lookup&ean=9781119578888") {
+		t.Errorf("ISBN-13 not looked up as EAN: %s", f.lastURL)
+	}
+}
+
+func TestVerifyChecksumAndImage(t *testing.T) {
+	defer func() { client.Transport = nil }()
+
+	for body, want := range map[string]bool{
+		`[{"ean":"1","valid":"1"}]`:  true,
+		`[{"ean":"1","valid":1}]`:    true,
+		`[{"ean":"1","valid":true}]`: true,
+		`[{"ean":"1","valid":"0"}]`:  false,
+		`[{"ean":"1","valid":0}]`:    false,
+	} {
+		useFakeAPI(body)
+		if valid, err := VerifyChecksum("1"); err != nil || valid != want {
+			t.Errorf("VerifyChecksum() = %v, %v for %s", valid, err, body)
+		}
+	}
+
+	useFakeAPI(`[{"ean":"1","barcode":"UE5H"}]`)
+	if img, err := BarcodeImage("1"); err != nil || string(img) != "PNG" {
+		t.Errorf("BarcodeImage() = %q, %v", img, err)
+	}
+	useFakeAPI(`[{"ean":"5099750442227","issuingCountry":"UK"}]`)
+	if c, err := IssuingCountryLookup("5099750442227"); err != nil || c != "UK" {
+		t.Errorf("IssuingCountryLookup() = %q, %v", c, err)
 	}
 }
